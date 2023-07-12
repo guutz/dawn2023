@@ -1,0 +1,6 @@
+[submodule "dafrb"]
+	path = dafrb
+	url = https://github.com/guutz/dafrb
+[submodule "chime-frb-open-data"]
+	path = chime-frb-open-data
+	url = https://github.com/chime-frb-open-data/chime-frb-open-data
