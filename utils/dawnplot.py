@@ -27,15 +27,15 @@ class EmbeddingPlot:
         palette = lambda n: [(int(r), int(g), int(b), a) for r, g, b, a in (plt.get_cmap(self.theme)(np.linspace(0, 1, n)) * [255, 255, 255, 1])]
         _color_attrs = [(key, value['data']) for key, value in self.displayProperties.items() if value.get('color')]
         color_maps = {}
-        log=False
         for key, value in _color_attrs:
             if isinstance(value[0], str):
                 color_maps[key] = btr.factor_cmap(key, palette(len(list(set(value)))), list(set(value)))
             else:
-                color_maps[key] = (btr.log_cmap if log else btr.linear_cmap)(key, palette(600), low=min(value), high=max(value))
+                color_maps[key] = btr.linear_cmap(key, palette(600), low=min(value), high=max(value))
+                color_maps[key+"_log"] = btr.log_cmap(key, palette(600), low=min(value), high=max(value))
         self.colorMaps = color_maps
         self._default_color_attr = list(color_maps.keys())[0]
-        self._color_options = list(color_maps.keys())
+        self._color_options = [k for k in color_maps.keys() if not k.endswith('_log')]
     
     def make_tooltip_graphs(self):
         data = [value['data'] for key, value in self.displayProperties.items() if value.get('graph')]
@@ -53,11 +53,14 @@ class EmbeddingPlot:
         self.embedding_df['graph'] = graphs
 
     def run_UMAP(self):
+        self._embedding_options = []
         for key, value in self.displayProperties.items():
             if value.get('umap'):
+                self._embedding_options.append(key)
                 reducer = umap.UMAP(**value['umap'])    
                 reducer.fit(value['data'])
                 self.embedding_df[f'{key}_x'], self.embedding_df[f'{key}_y'] = reducer.embedding_[:,0], reducer.embedding_[:,1]
+        self._default_embedding = self._embedding_options[0]
         
     def update(self, displayProperties=None):
         if displayProperties: self.displayProperties = displayProperties
@@ -66,7 +69,6 @@ class EmbeddingPlot:
         for key, value in self.displayProperties.items():
             if value.get('tooltip') or value.get('color'):
                 self.embedding_df[key] = value['data']
-        self._plot()
     
     def _plot(self, **kwargs):
         self.tooltips = f"""
@@ -77,13 +79,18 @@ class EmbeddingPlot:
             </div>
         """ if any([value.get('tooltip') for key, value in self.displayProperties.items()]) else None
         
+        self.embeddingSelect = Select(
+            title='Embedding',
+            value=self._default_embedding,
+            options=self._embedding_options
+        )
         self.coloringSelect = Select(
             title='Color by',
             value=self._default_color_attr,
             options=self._color_options
         )
         self.logCheck = Checkbox(
-            title='Log color scale',
+            label='Log color scale',
             active=False,
         )
         self.fig = bk.figure(tools=(
@@ -92,8 +99,8 @@ class EmbeddingPlot:
             LassoSelectTool()
         ), **kwargs)
         self.plotPoints = self.fig.circle(
-            x="x",
-            y="y", 
+            x=f'{self._default_embedding}_x',
+            y=f'{self._default_embedding}_y',
             source=self.embedding_df, 
             size=7,
             line_color='black',
@@ -103,19 +110,41 @@ class EmbeddingPlot:
         )
         self.colorbar = self.plotPoints.construct_color_bar(padding=1)
         self.fig.add_layout(self.colorbar, 'right')
+        self.embeddingSelect.js_on_change('value', CustomJS(
+            args=dict(plotPoints=self.plotPoints),
+            code=" plotPoints.glyph.x = cb_obj.value + '_x'; plotPoints.glyph.y = cb_obj.value + '_y'; "
+        ))
         self.coloringSelect.js_on_change('value', CustomJS(
-            args=dict(plotPoints=self.plotPoints, color_maps=self.colorMaps, colorbar=self.colorbar),
+            args=dict(plotPoints=self.plotPoints, color_maps=self.colorMaps, colorbar=self.colorbar, logCheck=self.logCheck),
             code="""
             const selectedAttr = cb_obj.value;
-            const colorMapper = color_maps[selectedAttr];
             
-            plotPoints.glyph.fill_color = colorMapper;
-            colorbar.color_mapper = colorMapper['transform'];
+            if (logCheck.active) {
+                plotPoints.glyph.fill_color = color_maps[selectedAttr + '_log'];
+                colorbar.color_mapper = color_maps[selectedAttr + '_log']['transform'];
+            } else {
+                plotPoints.glyph.fill_color = color_maps[selectedAttr];
+                colorbar.color_mapper = color_maps[selectedAttr]['transform'];
+            }
+            """
+        ))
+        self.logCheck.js_on_change('active', CustomJS(
+            args=dict(plotPoints=self.plotPoints, color_maps=self.colorMaps, colorbar=self.colorbar, coloringSelect=self.coloringSelect),
+            code="""
+            const selectedAttr = coloringSelect.value;
+            
+            if (cb_obj.active) {
+                plotPoints.glyph.fill_color = color_maps[selectedAttr + '_log'];
+                colorbar.color_mapper = color_maps[selectedAttr + '_log']['transform'];
+            } else {
+                plotPoints.glyph.fill_color = color_maps[selectedAttr];
+                colorbar.color_mapper = color_maps[selectedAttr]['transform'];
+            }
             """
         ))
         self.fig.grid.visible = False
         self.fig.axis.visible = False
-        self.plot = bkl.gridplot([[self.coloringSelect, self.logCheck], [self.fig]],toolbar_location='below')
+        self.plot = bkl.gridplot([[self.embeddingSelect, self.coloringSelect, self.logCheck], [self.fig]],toolbar_location='below')
         
     def show_notebook(self, save_filename='', **kwargs):
         bk.output_notebook()
