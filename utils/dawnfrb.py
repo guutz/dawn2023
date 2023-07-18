@@ -4,18 +4,6 @@ import pickle
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from cfod import catalog
-catalog = catalog.as_dataframe()
-catalog2 = pd.read_csv('/home/jovyan/work/chime_data/23.0004/chimefrb2023repeaters.csv')
-catalog = pd.concat([catalog,catalog2])
-
-# Load data from waterfall files
-base_path = '/home/jovyan/work/chime_data/21.0007/'
-filepaths = glob.glob(base_path+'*.h5')
-base_path2 = '/home/jovyan/work/chime_data/23.0004/'
-filepaths += glob.glob(base_path2+'*.h5')
-
-tns_names = [fp.split('/')[-1].split('_')[0] for fp in filepaths]
 
 def N(x):
     """ Convert a string to a number if possible """
@@ -29,30 +17,48 @@ def N(x):
         except AttributeError:
             return x
 
-def get_frb_info(attr):
-    """ Returns array of values for all FRBs """
-    if attr == 'aligned_ts':
-        return pickle.load(open('chime_frb_535_interpolated_ts.pkl','rb'))
-    arr = []
-    for tns_name in tns_names:
-        a = None
-        if attr in list(catalog.columns):
-            result = catalog[catalog['tns_name'] == tns_name][attr].values
-            # if len(result) > 1: print(f'Multiple sub-bursts found for {tns_name}, using value from first')
-            a = N(catalog[catalog['tns_name'] == tns_name][attr].values[0])
-        elif attr in ['calibrated_wfall', 'extent', 'model_spec', 'model_ts', 'model_wfall', 'plot_freq', 'plot_time', 'spec', 'ts', 'wfall']:
-            path = [fp for fp in filepaths if tns_name in fp][0]
-            with h5py.File(path, 'r') as f:
-                a = f['frb'][attr][:]
-        elif attr in ['calibration_observation_date', 'calibration_source_name', 'dm', 'scatterfit', 'tns_name']:
-            path = [fp for fp in filepaths if tns_name in fp][0]
-            with h5py.File(path, 'r') as f:
-                a = f['frb'].attrs[attr]
+class FRBInfo:
+    def __init__(self, catalog1path, catalog2path=None):
+        """ Load FRB catalog and data from waterfall files, both are expected to be in the same directory """
+        
+        csv1 = glob.glob(catalog1path+'*.csv')
+        self.catalog = pd.read_csv(csv1[0])
+        self.catalog['catalog'] = [1]*len(self.catalog)
+        self.filepaths = glob.glob(catalog1path+'*.h5')
+        
+        if catalog2path:
+            csv2 = glob.glob(catalog2path+'*.csv')
+            catalog2 = pd.read_csv(csv2[0])
+            catalog2['catalog'] = [2]*len(catalog2)
+            filepaths2 = glob.glob(catalog2path+'*.h5')
+            self.catalog = pd.concat([self.catalog,catalog2])
+            self.filepaths += filepaths2
+
+        self.catalog = self.catalog.assign(filepath = lambda x: [fp for fp in self.filepaths if x['tns_name'] in fp][0])
+        self.catalog.reset_index(inplace=True,drop=True)
+        self.tns_names = list(set(self.catalog['tns_name'].values))
+    
+    def __getitem__(self, attr):
+        return self.get_frb_info(attr)
+
+    def get_frb_info(self, attr):
+        """ Returns array of values for all FRBs """
+        
+        def read_h5(filepath, attr):
+            with h5py.File(filepath, 'r') as f:
+                try:
+                    return f['frb'][attr][:]
+                except KeyError:
+                    return f['frb'].attrs[attr]
+        
+        if attr in self.catalog.columns:
+            return list(self.catalog[attr].values)
+        elif attr in ['calibrated_wfall', 'extent', 'model_spec', 'model_ts', 'model_wfall', 'plot_freq', 'plot_time', 'spec', 'ts', 'wfall', 'calibration_observation_date', 'calibration_source_name', 'dm', 'scatterfit', 'tns_name']:
+            return [read_h5(fp, attr) for fp in self.catalog['filepath'].values]
         elif attr == 'date':
-            a = datetime.strptime(tns_name[3:-1], '%Y%m%d')
+            return datetime.strptime(tns_name[3:-1], '%Y%m%d')
         elif attr == 'n_subbursts':
-            a = len(catalog[catalog['tns_name'] == tns_name].values)
+            return len(self.catalog[self.catalog['tns_name'] == tns_name].values)
         else:
             print(f'Attribute {attr} not found for {tns_name}')
-        arr.append(a)
-    return arr
+
