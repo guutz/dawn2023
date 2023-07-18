@@ -9,12 +9,10 @@ def N(x):
     """ Convert a string to a number if possible """
     try:
         return float(x)
-    except ValueError:
+    except:
         try:
             return float(x.replace('<',''))
-        except ValueError:
-            return x
-        except AttributeError:
+        except:
             return x
 
 class FRBInfo:
@@ -33,8 +31,9 @@ class FRBInfo:
             filepaths2 = glob.glob(catalog2path+'*.h5')
             self.catalog = pd.concat([self.catalog,catalog2])
             self.filepaths += filepaths2
-
-        self.catalog = self.catalog.assign(filepath = lambda x: [fp for fp in self.filepaths if x['tns_name'] in fp][0])
+        
+        self.catalog.drop(self.catalog[self.catalog['tns_name'] == 'FRB20190329A'].index, inplace=True)
+        self.catalog['filepath'] = self.catalog['tns_name'].apply(lambda x: next((fp for fp in self.filepaths if x in fp), None))
         self.catalog.reset_index(inplace=True,drop=True)
         self.tns_names = list(set(self.catalog['tns_name'].values))
     
@@ -52,13 +51,13 @@ class FRBInfo:
                     return f['frb'].attrs[attr]
         
         if attr in self.catalog.columns:
-            return list(self.catalog[attr].values)
-        elif attr in ['calibrated_wfall', 'extent', 'model_spec', 'model_ts', 'model_wfall', 'plot_freq', 'plot_time', 'spec', 'ts', 'wfall', 'calibration_observation_date', 'calibration_source_name', 'dm', 'scatterfit', 'tns_name']:
+            return list(map(N,self.catalog[attr].values))
+        elif attr in ['calibrated_wfall', 'extent', 'model_spec', 'model_ts', 'model_wfall', 'plot_freq', 'plot_time', 'spec', 'ts', 'wfall', 'calibration_observation_date', 'calibration_source_name', 'dm', 'scatterfit']:
             return [read_h5(fp, attr) for fp in self.catalog['filepath'].values]
         elif attr == 'date':
             return datetime.strptime(tns_name[3:-1], '%Y%m%d')
         elif attr == 'n_subbursts':
-            return len(self.catalog[self.catalog['tns_name'] == tns_name].values)
+            return self.catalog.groupby('tns_name')['tns_name'].transform('count')
         else:
             print(f'Attribute {attr} not found for {tns_name}')
 
