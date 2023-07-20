@@ -4,6 +4,7 @@ import pickle
 import numpy as np
 import pandas as pd
 from datetime import datetime
+from astropy.time import Time
 
 def N(x):
     """ Convert a string to a number if possible """
@@ -32,7 +33,7 @@ class FRBInfo:
             self.catalog = pd.concat([self.catalog,catalog2])
             self.filepaths += filepaths2
         
-        self.catalog.drop(self.catalog[self.catalog['tns_name'] == 'FRB20190329A'].index, inplace=True)
+        self.catalog.drop(self.catalog[self.catalog['tns_name'] in ('FRB20190329A','FRB20200508H','FRB20200825B')].index, inplace=True)
         self.catalog['filepath'] = self.catalog['tns_name'].apply(lambda x: next((fp for fp in self.filepaths if x in fp), None))
         self.catalog.reset_index(inplace=True,drop=True)
         self.tns_names = list(set(self.catalog['tns_name'].values))
@@ -55,9 +56,9 @@ class FRBInfo:
         elif attr in ['calibrated_wfall', 'extent', 'model_spec', 'model_ts', 'model_wfall', 'plot_freq', 'plot_time', 'spec', 'ts', 'wfall', 'calibration_observation_date', 'calibration_source_name', 'dm', 'scatterfit']:
             return [read_h5(fp, attr) for fp in self.catalog['filepath'].values]
         elif attr == 'date':
-            return datetime.strptime(tns_name[3:-1], '%Y%m%d')
+            return self.catalog['mjd_inf'].apply(lambda x: Time(x, format='mjd').datetime)
         elif attr == 'n_subbursts':
             return self.catalog.groupby('tns_name')['tns_name'].transform('count')
         else:
-            print(f'Attribute {attr} not found for {tns_name}')
+            print(f'Attribute {attr} not found')
 
