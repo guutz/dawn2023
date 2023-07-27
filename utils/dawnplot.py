@@ -1,8 +1,9 @@
-
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import umap
+from sklearn.pipeline import Pipeline
+from sklearn.base import BaseEstimator, TransformerMixin
+from umap import UMAP
 import bokeh.layouts as bkl
 import bokeh.plotting as bk
 import bokeh.transform as btr
@@ -12,110 +13,187 @@ from itertools import zip_longest, cycle
 from bokeh.models import *
 from bokeh.palettes import *
 
-class EmbeddingPlot:
-    def __init__(self, displayProperties = {}, theme = 'rainbow'):
-        self.displayProperties = displayProperties
-        self.theme = theme
-        self.embedding_df = pd.DataFrame()
-        self.make_color_maps()
-        self.make_tooltip_graphs()
-        for key, value in self.displayProperties.items():
-            if value.get('tooltip') or value.get('color'):
-                self.embedding_df[key] = value['data']
+
+class TimeSeriesFFTProcessor(BaseEstimator, TransformerMixin):
+    def __init__(self, norm_inputs=False):
+        self.norm_inputs = norm_inputs
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        """ Transforms a list of time series into a list of their real FFTs. """
+        pad_len = max([len(x) for x in X])
+        X = [np.concatenate([x, np.zeros(pad_len - len(x))]) for x in X]
+        if self.norm_inputs: 
+            X = [series / np.max(series) for series in X]
+        X_fft = np.fft.rfft(X).real
+        return X_fft
     
-    def make_color_maps(self, log=False):
-        palette = lambda n: [(int(r), int(g), int(b), a) for r, g, b, a in (plt.get_cmap(self.theme)(np.linspace(0, 1, n)) * [255, 255, 255, 1])]
-        _color_attrs = [(key, value['data']) for key, value in self.displayProperties.items() if value.get('color')]
-        color_maps = {}
-        for key, value in _color_attrs:
-            if isinstance(value[0], str):
-                color_maps[key] = btr.factor_cmap(key, palette(len(list(set(value)))), list(set(value)))
-            else:
-                color_maps[key] = btr.linear_cmap(key, palette(600), low=min(value), high=max(value))
-                color_maps[key+"_log"] = btr.log_cmap(key, palette(600), low=min(value), high=max(value))
-        self.colorMaps = color_maps
-        self._default_color_attr = list(color_maps.keys())[0]
-        self._color_options = [k for k in color_maps.keys() if not k.endswith('_log')]
     
-    def make_tooltip_graphs(self):
-        data = [value['data'] for key, value in self.displayProperties.items() if value.get('graph')]
-        graphs = []
+class FFT_UMAP:
+    """
+    A transformer that takes a list of time series and UMAPs their FFTs.
+    """
+    def __init__(self, norm_inputs=False, targets=None, **umap_args):
+        self.norm_inputs = norm_inputs
+        self.targets = targets
+        self.umap_args = umap_args
+    
+    def __repr__(self):
+        return f'FFT_UMAP(norm_inputs={self.norm_inputs}, targets={self.targets}, {str(self.umap)[5:-1]})'
+
+    def fit(self, X, y=None):
+        y = y if y is not None else self.targets
+        self.umap = UMAP(
+            **self.umap_args,
+        )
+        self.fft = TimeSeriesFFTProcessor(norm_inputs=self.norm_inputs)
+        self.fft.fit(X)
+        X_fft = self.fft.transform(X)
+        self.umap.fit(X_fft, y=y)
+        return self
+
+    def transform(self, X):
+        X_fft = self.fft.transform(X)
+        return self.umap.transform(X_fft)
+
+
+class PlotData:
+    def __init__(self, title, data, show_in_table=True):
+        self.title = title
+        self.data = data
+        self.show_in_table = show_in_table
+        
+    
+class EmbeddingView(PlotData):
+    def __init__(self, title, data, reducer):
+        super().__init__(title, data, show_in_table=False)       
+        self.reducer = reducer
+        self.reducer.fit(data)
+        self.embedding = self.reducer.transform(data)
+        self.x, self.y = self.embedding[:, 0], self.embedding[:, 1]
+
+    def __getitem__(self, key):
+        return self.__dict__[key]
+
+
+class TooltipGraph(PlotData):
+    def __init__(self, *data, title='TooltipGraph'):
+        """
+        data: a list of time series or similar, need not be the same length
+        """
+        _graphs = []
         for y_data in zip_longest(*data):
-            # make img src base64 of plot
             img = BytesIO()
-            fig = plt.figure(figsize=(2,1))
-            for p, color in zip(y_data, cycle(['red', 'blue', 'green', 'purple', 'orange', 'brown', 'pink', 'gray', 'olive'])):
-                plt.plot(p, color=color, linewidth=0.5)
+            fig = plt.figure(figsize=(3, 1))
+            for p, color in zip(y_data, cycle(['gray', 'blue', 'black', 'green', 'purple', 'orange', 'brown', 'pink', 'red', 'olive'])):
+                plt.plot(np.trim_zeros(p), color=color, linewidth=1, drawstyle="steps-post")
             plt.axis('off')
             plt.savefig(img, format='png', bbox_inches='tight', pad_inches=0)
             plt.close(fig)
-            graphs.append('data:image/png;base64,' + base64.b64encode(img.getvalue()).decode())  
-        self.embedding_df['graph'] = graphs
+            _graphs.append('data:image/png;base64,' + base64.b64encode(img.getvalue()).decode())
+        super().__init__(title, _graphs)
 
-    def run_UMAP(self):
-        self._embedding_options = []
-        for key, value in self.displayProperties.items():
-            if value.get('umap'):
-                self._embedding_options.append(key)
-                reducer = umap.UMAP(**value['umap'])    
-                reducer.fit(value['data'])
-                self.embedding_df[f'{key}_x'], self.embedding_df[f'{key}_y'] = reducer.embedding_[:,0], reducer.embedding_[:,1]
-        self._default_embedding = self._embedding_options[0]
-        
-    def update(self, displayProperties=None):
-        if displayProperties: self.displayProperties = displayProperties
-        self.make_color_maps()
-        self.make_tooltip_graphs()
-        for key, value in self.displayProperties.items():
-            if value.get('tooltip') or value.get('color'):
-                self.embedding_df[key] = value['data']
-    
-    def _plot(self, **kwargs):
-        self.tooltips = f"""
+
+class ColorMap(PlotData):
+    def __init__(self, title, data, palette='gnuplot2', categorical=False, high_transparent=False):
+        super().__init__(title, data)
+        self.palette = palette
+        self.categorical = categorical
+        if isinstance(self.data[0], str) or self.categorical:
+            pal = self._palette_list(len(list(set(self.data))))
+            if high_transparent: 
+                pal[-1] = tuple(list(pal[-1])[:-1]+[0]) # this crap is just to make the highest category color transparent
+            self.map = btr.factor_cmap(self.title, pal, sorted(list(set(self.data))))
+            self.map_log = btr.factor_cmap(self.title, pal, sorted(list(set(self.data))))
+        else:
+            self.map = btr.linear_cmap(self.title, self._palette_list(1000), low=min(self.data), high=max(self.data))
+            self.map_log = btr.log_cmap(self.title, self._palette_list(1000), low=0.01, high=max(self.data))
+
+    def _palette_list(self, n):
+        return [(int(r), int(g), int(b), a) for r, g, b, a in (plt.get_cmap(self.palette)(np.linspace(0, 1, n)) * [255, 255, 255, 1])]
+
+
+class BokehInterface:
+    def __init__(self, views, color_by=None, tooltip_data=None):
+        self.views = views
+        self.color_by = color_by
+        self.tooltip_data = tooltip_data
+        self.PLOT_DF = pd.DataFrame()
+        for view in self.views:
+            self.PLOT_DF[view.title + '_x'] = view['x']
+            self.PLOT_DF[view.title + '_y'] = view['y']
+        for color in self.color_by:
+            self.PLOT_DF[color.title] = color.data
+        for tooltip in self.tooltip_data:
+            self.PLOT_DF[tooltip.title + '_graph'] = tooltip.data
+        self.tooltip_HTML = f"""
             <div>
-                {"<div>" + "".join([f'<div><span style="font-size: 15px; font-weight: bold;">{attr_key}: @{attr_key}</span></div>' for attr_key, value in self.displayProperties.items() if value.get('tooltip')]) + "</div>"}
-                {"<div><img src='@graph' style='margin: 5px 5px 5px 5px'/></div>" if any([value.get('graph') for key, value in self.displayProperties.items()]) else ""}
+                {"<div>" + "".join([f'<div><span style="font-size: 15px; font-weight: bold;">{tooltip.title}: @{tooltip.title}</span></div>' for tooltip in self.tooltip_data if isinstance(tooltip, PlotData)]) + "</div>"}
+                {"".join(["<div><img src='@{tooltip.title}_graph' style='margin: 5px 5px 5px 5px'/></div>" for tooltip in self.tooltip_data if isinstance(tooltip, TooltipGraph)])}
                 <hr style="margin: 5px 5px 5px 5px"/><br>
             </div>
-        """ if any([value.get('tooltip') for key, value in self.displayProperties.items()]) else None
-        
+        """ if self.tooltip_data is not None else None
+    
+    def init_plot_elements(self):
+        self.data_source = ColumnDataSource(self.PLOT_DF)
         self.embeddingSelect = Select(
-            title='Embedding',
-            value=self._default_embedding,
-            options=self._embedding_options
+            title="Embedding",
+            value=self.views[0].title,
+            options=[view.title for view in self.views]
         )
         self.coloringSelect = Select(
-            title='Color by',
-            value=self._default_color_attr,
-            options=self._color_options
+            title="Color by",
+            value=self.color_by[0].title,
+            options=[color.title for color in self.color_by]
         )
         self.logCheck = Checkbox(
-            label='Log color scale',
-            active=False,
+            label="Log color scale",
+            active=False
         )
-        self.fig = bk.figure(tools=(
-            CopyTool(), 
-            HoverTool(tooltips=self.tooltips), 
-            LassoSelectTool()
-        ), **kwargs)
+        self.fig = bk.figure(
+            height=500,
+            width=1100,
+            title=self.views[0].title,
+            tools=(CopyTool(), HoverTool(tooltips=self.tooltip_HTML), BoxZoomTool(), ResetTool())
+        )
         self.plotPoints = self.fig.circle(
-            x=f'{self._default_embedding}_x',
-            y=f'{self._default_embedding}_y',
-            source=self.embedding_df, 
-            size=7,
+            x=f'{self.views[0].title}_x',
+            y=f'{self.views[0].title}_y',
+            source=self.data_source,
+            size=16,
             line_color='black',
-            line_width=0.25,
+            line_width=0.1,
+            line_alpha=0.7,
             fill_alpha=0.7,
-            fill_color=self.colorMaps[self._default_color_attr],
+            fill_color=self.color_by[0].map,
         )
-        self.colorbar = self.plotPoints.construct_color_bar(padding=1)
-        self.fig.add_layout(self.colorbar, 'right')
+        self.colorbar = ColorBar(
+            color_mapper=self.color_by[0].map.transform,
+            padding=1
+        )
         self.embeddingSelect.js_on_change('value', CustomJS(
-            args=dict(plotPoints=self.plotPoints),
-            code=" plotPoints.glyph.x = cb_obj.value + '_x'; plotPoints.glyph.y = cb_obj.value + '_y'; "
-        ))
+            args=dict(plotPoints=self.plotPoints, fig=self.fig, EMBEDDING_TITLES={view.title: view.reducer.__repr__() for view in self.views}),
+            code="""
+            const selectedValue = cb_obj.value;
+            const x = selectedValue + '_x';
+            const y = selectedValue + '_y';
+
+            // Update the x and y attributes of the plotPoints glyph
+            plotPoints.glyph.x = { field: x };
+            plotPoints.glyph.y = { field: y };
+
+            // Update the title
+            fig.title.text = EMBEDDING_TITLES[selectedValue];
+
+            // Trigger the glyph change event
+            plotPoints.data_source.change.emit();
+            """))
+        self.color_maps = {attr.title: attr.map for attr in self.color_by}
+        self.color_maps.update({attr.title + '_log': attr.map_log for attr in self.color_by})
         self.coloringSelect.js_on_change('value', CustomJS(
-            args=dict(plotPoints=self.plotPoints, color_maps=self.colorMaps, colorbar=self.colorbar, logCheck=self.logCheck),
+            args=dict(plotPoints=self.plotPoints, color_maps=self.color_maps, coloringSelect=self.coloringSelect, logCheck=self.logCheck),
             code="""
             const selectedAttr = cb_obj.value;
             
@@ -129,7 +207,7 @@ class EmbeddingPlot:
             """
         ))
         self.logCheck.js_on_change('active', CustomJS(
-            args=dict(plotPoints=self.plotPoints, color_maps=self.colorMaps, colorbar=self.colorbar, coloringSelect=self.coloringSelect),
+            args=dict(plotPoints=self.plotPoints, color_maps=self.color_maps, colorbar=self.colorbar, coloringSelect=self.coloringSelect),
             code="""
             const selectedAttr = coloringSelect.value;
             
@@ -142,13 +220,62 @@ class EmbeddingPlot:
             }
             """
         ))
+
+        table_cols = [TableColumn(field=col, title=col) for col in self.PLOT_DF.columns if not col.endswith('_x') and not col.endswith('_y') and not col.endswith('_graph')]
+
+        stylesheet = ".slick-cell.selected { background-color: #ffff00!important; }"
+        self.table = DataTable(
+            source=self.data_source,
+            columns=table_cols,
+            resizable=True,
+            stylesheets=[stylesheet]
+        )
+
+        selected_points_text = TextAreaInput(rows=5, value="")
+
+        self.data_source.selected.js_on_change('indices', CustomJS(
+            args=dict(source=self.data_source, selected_points_text=selected_points_text),
+            code="""
+            const indices = source.selected.indices;
+            const tnsNames = source.data.tns_name;
+            const selectedPoints = indices.map(index => tnsNames[index]);
+            selected_points_text.value = "'" + selectedPoints.join("', \\n'") + "'";
+        """))
+        
+    def show(self):
         self.fig.grid.visible = False
         self.fig.axis.visible = False
-        self.plot = bkl.gridplot([[self.embeddingSelect, self.coloringSelect, self.logCheck], [self.fig]],toolbar_location='below')
-        
-    def show_notebook(self, save_filename='', **kwargs):
+        plot = bkl.gridplot([[bkl.column(self.embeddingSelect, self.fig), bkl.column(self.coloringSelect, self.logCheck, self.table, self.selected_points_text)]],toolbar_location='below')
         bk.output_notebook()
-        self._plot(**kwargs)
-        bk.show(self.plot)
-        if save_filename: 
-            bk.save(self.plot, save_filename)
+        bk.show(plot)
+
+
+BokehInterface(
+    views=[
+        EmbeddingView(
+            title='Embedding1',
+            data=series1,
+            reducer=FFT_UMAP(
+                norm_inputs=True,    
+            ),
+        )
+    ],
+    color_by=[
+        ColorMap(
+            title='Color1',
+            data=series2,
+        )
+    ],
+    tooltip_data=[
+        PlotData(
+            title='Tooltip1',
+            data=series3,
+        ),
+        TooltipGraph(
+            series1,
+            title='Tooltip2',
+        ),
+    ],
+)
+
+
