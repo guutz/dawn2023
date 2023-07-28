@@ -46,6 +46,7 @@ class FFT_UMAP:
     def fit(self, X, y=None):
         y = y if y is not None else self.targets
         self.umap = UMAP(
+            n_jobs=4,
             **self.umap_args,
         )
         self.fft = TimeSeriesFFTProcessor(norm_inputs=self.norm_inputs)
@@ -105,8 +106,7 @@ class ColorMap(PlotData):
             pal = self._palette_list(len(list(set(self.data))))
             if high_transparent: 
                 pal[-1] = tuple(list(pal[-1])[:-1]+[0]) # this crap is just to make the highest category color transparent
-            self.map = btr.factor_cmap(self.title, pal, sorted(list(set(self.data))))
-            self.map_log = btr.factor_cmap(self.title, pal, sorted(list(set(self.data))))
+            self.map = self.map_log = btr.factor_cmap(self.title, pal, sorted([str(i) for i in set(self.data)]))
         else:
             self.map = btr.linear_cmap(self.title, self._palette_list(1000), low=min(self.data), high=max(self.data))
             self.map_log = btr.log_cmap(self.title, self._palette_list(1000), low=0.01, high=max(self.data))
@@ -127,11 +127,11 @@ class BokehInterface:
         for color in self.color_by:
             self.PLOT_DF[color.title] = color.data
         for tooltip in self.tooltip_data:
-            self.PLOT_DF[tooltip.title + '_graph'] = tooltip.data
+            self.PLOT_DF[tooltip.title] = tooltip.data
         self.tooltip_HTML = f"""
             <div>
-                {"<div>" + "".join([f'<div><span style="font-size: 15px; font-weight: bold;">{tooltip.title}: @{tooltip.title}</span></div>' for tooltip in self.tooltip_data if isinstance(tooltip, PlotData)]) + "</div>"}
-                {"".join(["<div><img src='@{tooltip.title}_graph' style='margin: 5px 5px 5px 5px'/></div>" for tooltip in self.tooltip_data if isinstance(tooltip, TooltipGraph)])}
+                {"<div>" + "".join([f'<div><span style="font-size: 15px; font-weight: bold;">{tooltip.title}: @{tooltip.title}</span></div>' for tooltip in self.tooltip_data if isinstance(tooltip, PlotData) and not isinstance(tooltip, TooltipGraph)]) + "</div>"}
+                {"".join([f"<div><img src='@{tooltip.title}' style='margin: 5px 5px 5px 5px'/></div>" for tooltip in self.tooltip_data if isinstance(tooltip, TooltipGraph)])}
                 <hr style="margin: 5px 5px 5px 5px"/><br>
             </div>
         """ if self.tooltip_data is not None else None
@@ -231,10 +231,10 @@ class BokehInterface:
             stylesheets=[stylesheet]
         )
 
-        selected_points_text = TextAreaInput(rows=5, value="")
+        self.selected_points_text = TextAreaInput(rows=5, value="")
 
         self.data_source.selected.js_on_change('indices', CustomJS(
-            args=dict(source=self.data_source, selected_points_text=selected_points_text),
+            args=dict(source=self.data_source, selected_points_text=self.selected_points_text),
             code="""
             const indices = source.selected.indices;
             const tnsNames = source.data.tns_name;
@@ -248,34 +248,4 @@ class BokehInterface:
         plot = bkl.gridplot([[bkl.column(self.embeddingSelect, self.fig), bkl.column(self.coloringSelect, self.logCheck, self.table, self.selected_points_text)]],toolbar_location='below')
         bk.output_notebook()
         bk.show(plot)
-
-
-BokehInterface(
-    views=[
-        EmbeddingView(
-            title='Embedding1',
-            data=series1,
-            reducer=FFT_UMAP(
-                norm_inputs=True,    
-            ),
-        )
-    ],
-    color_by=[
-        ColorMap(
-            title='Color1',
-            data=series2,
-        )
-    ],
-    tooltip_data=[
-        PlotData(
-            title='Tooltip1',
-            data=series3,
-        ),
-        TooltipGraph(
-            series1,
-            title='Tooltip2',
-        ),
-    ],
-)
-
-
+        bk.output_file(title="Bokeh Plot", filename='bokeh_saves/test.html')
