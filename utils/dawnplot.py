@@ -43,8 +43,7 @@ class FFT_UMAP:
     def __repr__(self):
         return f'FFT_UMAP(norm_inputs={self.norm_inputs}, targets={self.targets}, {str(self.umap)[5:-1]})'
 
-    def fit(self, X, y=None):
-        y = y if y is not None else self.targets
+    def fit(self, X):
         self.umap = UMAP(
             n_jobs=4,
             **self.umap_args,
@@ -52,7 +51,7 @@ class FFT_UMAP:
         self.fft = TimeSeriesFFTProcessor(norm_inputs=self.norm_inputs)
         self.fft.fit(X)
         X_fft = self.fft.transform(X)
-        self.umap.fit(X_fft, y=y)
+        self.umap.fit(X_fft, y=self.targets)
         return self
 
     def transform(self, X):
@@ -66,20 +65,51 @@ class PlotData:
         self.data = data
         self.show_in_table = show_in_table
         
+        
+class TooltipData(PlotData):
+    def __init__(self, title, data, show_in_table=True):
+        super().__init__(title, data, show_in_table=show_in_table)
+        self.html = f'<div><span style="font-size: 15px; font-weight: bold;">{self.title}: @{self.title}</span></div>'
+
+class ColorMap(PlotData):
+    def __init__(self, title, data, palette='gnuplot2', categorical=False, high_transparent=False, show_in_table=True):
+        super().__init__(title, data, show_in_table=show_in_table)
+        self.palette = palette
+        self.categorical = categorical
+        if isinstance(self.data[0], str) or self.categorical:
+            pal = self._palette_list(len(list(set(self.data))))
+            if high_transparent: 
+                pal[-1] = tuple(list(pal[-1])[:-1]+[0]) # this crap is just to make the highest category color transparent
+            self.map = self.map_log = btr.factor_cmap(self.title, pal, sorted([str(i) for i in set(self.data)]))
+        else:
+            self.map = btr.linear_cmap(self.title, self._palette_list(1000), low=min(self.data), high=max(self.data))
+            self.map_log = btr.log_cmap(self.title, self._palette_list(1000), low=max(min(self.data),0.01), high=max(self.data))
+
+    def _palette_list(self, n):
+        return [(int(r), int(g), int(b), a) for r, g, b, a in (plt.get_cmap(self.palette)(np.linspace(0, 1, n)) * [255, 255, 255, 1])]
+
+class ColorTooltipData(ColorMap, TooltipData):
+    def __init__(self, title, data, palette='gnuplot2', categorical=False, high_transparent=False, show_in_table=True):
+        ColorMap.__init__(self, title, data, palette=palette, categorical=categorical, high_transparent=high_transparent, show_in_table=show_in_table)
+        TooltipData.__init__(self, title, data, show_in_table=show_in_table)
+
+class PlotData1D(PlotData):
+    def __init__(self, title, data, xlabels=None):
+        super().__init__(title, data, show_in_table=False)
+        self.xlabels = xlabels if xlabels is not None else [str(i) for i in range(len(data))]
     
-class EmbeddingView(PlotData):
-    def __init__(self, title, data, reducer):
-        super().__init__(title, data, show_in_table=False)       
+class EmbeddingView(PlotData1D):
+    def __init__(self, title, data, reducer, xlabels=None):
+        super().__init__(title, data, xlabels=xlabels)       
         self.reducer = reducer
         self.reducer.fit(data)
         self.embedding = self.reducer.transform(data)
-        self.x, self.y = self.embedding[:, 0], self.embedding[:, 1]
 
     def __getitem__(self, key):
         return self.__dict__[key]
 
 
-class TooltipGraph(PlotData):
+class TooltipGraph(PlotData1D, TooltipData):
     def __init__(self, *data, title='TooltipGraph'):
         """
         data: a list of time series or similar, need not be the same length
@@ -94,47 +124,24 @@ class TooltipGraph(PlotData):
             plt.savefig(img, format='png', bbox_inches='tight', pad_inches=0)
             plt.close(fig)
             _graphs.append('data:image/png;base64,' + base64.b64encode(img.getvalue()).decode())
-        super().__init__(title, _graphs)
-
-
-class ColorMap(PlotData):
-    def __init__(self, title, data, palette='gnuplot2', categorical=False, high_transparent=False):
-        super().__init__(title, data)
-        self.palette = palette
-        self.categorical = categorical
-        if isinstance(self.data[0], str) or self.categorical:
-            pal = self._palette_list(len(list(set(self.data))))
-            if high_transparent: 
-                pal[-1] = tuple(list(pal[-1])[:-1]+[0]) # this crap is just to make the highest category color transparent
-            self.map = self.map_log = btr.factor_cmap(self.title, pal, sorted([str(i) for i in set(self.data)]))
-        else:
-            self.map = btr.linear_cmap(self.title, self._palette_list(1000), low=min(self.data), high=max(self.data))
-            self.map_log = btr.log_cmap(self.title, self._palette_list(1000), low=0.01, high=max(self.data))
-
-    def _palette_list(self, n):
-        return [(int(r), int(g), int(b), a) for r, g, b, a in (plt.get_cmap(self.palette)(np.linspace(0, 1, n)) * [255, 255, 255, 1])]
+        super().__init__(f'{title}_graph', _graphs, show_in_table=False)
+        self.html = f"<div><img src='@{self.title}_graph' style='margin: 5px 5px 5px 5px'/></div>"
 
 
 class BokehInterface:
-    def __init__(self, views, color_by=None, tooltip_data=None):
+    def __init__(self, views, plot_elements):
         self.views = views
-        self.color_by = color_by
-        self.tooltip_data = tooltip_data
+        self.plot_elements = plot_elements
         self.PLOT_DF = pd.DataFrame()
         for view in self.views:
-            self.PLOT_DF[view.title + '_x'] = view['x']
-            self.PLOT_DF[view.title + '_y'] = view['y']
-        for color in self.color_by:
-            self.PLOT_DF[color.title] = color.data
-        for tooltip in self.tooltip_data:
-            self.PLOT_DF[tooltip.title] = tooltip.data
+            self.PLOT_DF[[view.title + '_x', view.title + '_y']] = view.embedding
+        for element in self.plot_elements:
+            self.PLOT_DF[element.title] = element.data
         self.tooltip_HTML = f"""
             <div>
-                {"<div>" + "".join([f'<div><span style="font-size: 15px; font-weight: bold;">{tooltip.title}: @{tooltip.title}</span></div>' for tooltip in self.tooltip_data if isinstance(tooltip, PlotData) and not isinstance(tooltip, TooltipGraph)]) + "</div>"}
-                {"".join([f"<div><img src='@{tooltip.title}' style='margin: 5px 5px 5px 5px'/></div>" for tooltip in self.tooltip_data if isinstance(tooltip, TooltipGraph)])}
-                <hr style="margin: 5px 5px 5px 5px"/><br>
+                {''.join([element.html for element in self.plot_elements if isinstance(element, TooltipData)])}
             </div>
-        """ if self.tooltip_data is not None else None
+        """
     
     def init_plot_elements(self):
         self.data_source = ColumnDataSource(self.PLOT_DF)
@@ -145,8 +152,8 @@ class BokehInterface:
         )
         self.coloringSelect = Select(
             title="Color by",
-            value=self.color_by[0].title,
-            options=[color.title for color in self.color_by]
+            value=[element.title for element in self.plot_elements if isinstance(element, ColorMap)][0],
+            options=[element.title for element in self.plot_elements if isinstance(element, ColorMap)]
         )
         self.logCheck = Checkbox(
             label="Log color scale",
@@ -155,22 +162,22 @@ class BokehInterface:
         self.fig = bk.figure(
             height=500,
             width=1100,
-            title=self.views[0].title,
-            tools=(CopyTool(), HoverTool(tooltips=self.tooltip_HTML), BoxZoomTool(), ResetTool())
+            title=self.views[0].reducer.__repr__(),
+            tools=(CopyTool(), LassoSelectTool(), HoverTool(tooltips=self.tooltip_HTML), BoxZoomTool(), ResetTool()),
         )
         self.plotPoints = self.fig.circle(
             x=f'{self.views[0].title}_x',
             y=f'{self.views[0].title}_y',
             source=self.data_source,
-            size=16,
+            size=13,
             line_color='black',
             line_width=0.1,
             line_alpha=0.7,
             fill_alpha=0.7,
-            fill_color=self.color_by[0].map,
+            fill_color=[element.map for element in self.plot_elements if isinstance(element, ColorMap)][0]
         )
         self.colorbar = ColorBar(
-            color_mapper=self.color_by[0].map.transform,
+            color_mapper=[element.map for element in self.plot_elements if isinstance(element, ColorMap)][0].transform,
             padding=1
         )
         self.embeddingSelect.js_on_change('value', CustomJS(
@@ -190,8 +197,8 @@ class BokehInterface:
             // Trigger the glyph change event
             plotPoints.data_source.change.emit();
             """))
-        self.color_maps = {attr.title: attr.map for attr in self.color_by}
-        self.color_maps.update({attr.title + '_log': attr.map_log for attr in self.color_by})
+        self.color_maps = {attr.title: attr.map for attr in self.plot_elements if isinstance(attr, ColorMap)}
+        self.color_maps.update({attr.title + '_log': attr.map_log for attr in self.plot_elements if isinstance(attr, ColorMap)})
         self.coloringSelect.js_on_change('value', CustomJS(
             args=dict(plotPoints=self.plotPoints, color_maps=self.color_maps, coloringSelect=self.coloringSelect, logCheck=self.logCheck),
             code="""
