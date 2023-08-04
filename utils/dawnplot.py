@@ -69,7 +69,7 @@ class PlotData:
 class TooltipData(PlotData):
     def __init__(self, title, data, show_in_table=True):
         super().__init__(title, data, show_in_table=show_in_table)
-        self.html = f'<div><span style="font-size: 15px; font-weight: bold;">{self.title}: @{self.title}</span></div>'
+        self.html = f'<div><span style="font-size: 12px; font-weight: bold;">{self.title}: @{self.title}</span></div>'
 
 class ColorMap(PlotData):
     def __init__(self, title, data, palette='gnuplot2', categorical=False, high_transparent=False, show_in_table=True):
@@ -124,9 +124,12 @@ class TooltipGraph(PlotData1D, TooltipData):
             plt.savefig(img, format='png', bbox_inches='tight', pad_inches=0)
             plt.close(fig)
             _graphs.append('data:image/png;base64,' + base64.b64encode(img.getvalue()).decode())
-        super().__init__(f'{title}_graph', _graphs, show_in_table=False)
-        self.html = f"<div><img src='@{self.title}_graph' style='margin: 5px 5px 5px 5px'/></div>"
+        super().__init__(f'{title}_graph', _graphs)
+        self.html = f"<div><img src='@{title}_graph' style='margin: 5px 5px 5px 5px'/></div>"
 
+class AuxiliaryLineGraph(PlotData1D):
+    def __init__(self, title, data):
+        super().__init__(self, title, data, xlabels=[np.arange(0,len(d)) for d in data])
 
 class BokehInterface:
     def __init__(self, views, plot_elements):
@@ -137,10 +140,13 @@ class BokehInterface:
             self.PLOT_DF[[view.title + '_x', view.title + '_y']] = view.embedding
         for element in self.plot_elements:
             self.PLOT_DF[element.title] = element.data
+            if isinstance(element,AuxiliaryLineGraph):
+                self.PLOT_DF[element.title+'_x'] = element.xlabels
         self.tooltip_HTML = f"""
             <div>
                 {''.join([element.html for element in self.plot_elements if isinstance(element, TooltipData)])}
             </div>
+            <hr style="margin: 5px 5px 5px 5px"/><br>
         """
     
     def init_plot_elements(self):
@@ -161,7 +167,7 @@ class BokehInterface:
         )
         self.fig = bk.figure(
             height=500,
-            width=1100,
+            width=500,
             title=self.views[0].reducer.__repr__(),
             tools=(CopyTool(), LassoSelectTool(), HoverTool(tooltips=self.tooltip_HTML), BoxZoomTool(), ResetTool()),
         )
@@ -180,6 +186,7 @@ class BokehInterface:
             color_mapper=[element.map for element in self.plot_elements if isinstance(element, ColorMap)][0].transform,
             padding=1
         )
+        self.fig.add_layout(self.colorbar, 'right')
         self.embeddingSelect.js_on_change('value', CustomJS(
             args=dict(plotPoints=self.plotPoints, fig=self.fig, EMBEDDING_TITLES={view.title: view.reducer.__repr__() for view in self.views}),
             code="""
@@ -249,10 +256,18 @@ class BokehInterface:
             selected_points_text.value = "'" + selectedPoints.join("', \\n'") + "'";
         """))
         
+        self.aux_graphs = [element for element in self.plot_elements if isinstance(element, AuxiliaryLineGraph)]
+        if any(self.aux_graphs):
+            self.aux_plot = bk.figure()
+            for a in self.aux_graphs:
+                self.aux_plot.line(x=a.title+'_x',y=a.title,line_width=1)
+        
     def show(self):
         self.fig.grid.visible = False
         self.fig.axis.visible = False
         plot = bkl.gridplot([[bkl.column(self.embeddingSelect, self.fig), bkl.column(self.coloringSelect, self.logCheck, self.table, self.selected_points_text)]],toolbar_location='below')
         bk.output_notebook()
         bk.show(plot)
+        if hasattr(self,'aux_plot'):
+            bk.show(self.aux_plot)
         bk.output_file(title="Bokeh Plot", filename='bokeh_saves/test.html')

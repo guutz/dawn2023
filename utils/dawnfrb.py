@@ -36,10 +36,13 @@ class FRBInfo:
         self.catalog.drop(self.catalog[self.catalog['tns_name'] == 'FRB20190329A'].index, inplace=True) # no h5 file
         self.catalog.drop(self.catalog[self.catalog['tns_name'] == 'FRB20200508H'].index, inplace=True) # spec is only 128 long
         self.catalog.drop(self.catalog[self.catalog['tns_name'] == 'FRB20200825B'].index, inplace=True) # width is 2.0e-3 ms
+
         self.catalog['filepath'] = self.catalog['tns_name'].apply(lambda x: next((fp for fp in self.filepaths if x in fp), None))
         self.catalog.reset_index(inplace=True,drop=True)
         labels = pd.read_csv('data/grouping_labels.csv')
         self.catalog = pd.concat([self.catalog,labels],axis=1)
+        self.catalog.drop(self.catalog[self.catalog['excluded_flag'] == 1].index, inplace=True)
+        self.catalog.drop(self.catalog[[np.mean(np.diff(a))>1 for a in self['plot_time']]].index, inplace=True)
         
         self.catalog['n_subbursts'] = self.catalog.groupby('tns_name')['tns_name'].transform('count')
         
