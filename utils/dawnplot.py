@@ -27,7 +27,7 @@ class TimeSeriesFFTProcessor(BaseEstimator, TransformerMixin):
         X = [np.concatenate([x, np.zeros(pad_len - len(x))]) for x in X]
         if self.norm_inputs: 
             X = [series / np.max(series) for series in X]
-        X_fft = np.fft.rfft(X).real
+        X_fft = np.abs(np.fft.rfft(X))
         return X_fft
     
     
@@ -127,10 +127,6 @@ class TooltipGraph(PlotData1D, TooltipData):
         super().__init__(f'{title}_graph', _graphs)
         self.html = f"<div><img src='@{title}_graph' style='margin: 5px 5px 5px 5px'/></div>"
 
-class AuxiliaryLineGraph(PlotData1D):
-    def __init__(self, title, data):
-        super().__init__(self, title, data, xlabels=[np.arange(0,len(d)) for d in data])
-
 class BokehInterface:
     def __init__(self, views, plot_elements):
         self.views = views
@@ -140,8 +136,6 @@ class BokehInterface:
             self.PLOT_DF[[view.title + '_x', view.title + '_y']] = view.embedding
         for element in self.plot_elements:
             self.PLOT_DF[element.title] = element.data
-            if isinstance(element,AuxiliaryLineGraph):
-                self.PLOT_DF[element.title+'_x'] = element.xlabels
         self.tooltip_HTML = f"""
             <div>
                 {''.join([element.html for element in self.plot_elements if isinstance(element, TooltipData)])}
@@ -171,14 +165,14 @@ class BokehInterface:
             title=self.views[0].reducer.__repr__(),
             tools=(CopyTool(), LassoSelectTool(), HoverTool(tooltips=self.tooltip_HTML), BoxZoomTool(), ResetTool()),
         )
-        self.plotPoints = self.fig.circle(
+        self.plotPoints = self.fig.scatter(
             x=f'{self.views[0].title}_x',
             y=f'{self.views[0].title}_y',
             source=self.data_source,
-            size=13,
+            size=11,
             line_color='black',
-            line_width=0.1,
-            line_alpha=0.7,
+            line_width=0.25,
+            line_alpha=1,
             fill_alpha=0.7,
             fill_color=[element.map for element in self.plot_elements if isinstance(element, ColorMap)][0]
         )
@@ -256,18 +250,10 @@ class BokehInterface:
             selected_points_text.value = "'" + selectedPoints.join("', \\n'") + "'";
         """))
         
-        self.aux_graphs = [element for element in self.plot_elements if isinstance(element, AuxiliaryLineGraph)]
-        if any(self.aux_graphs):
-            self.aux_plot = bk.figure()
-            for a in self.aux_graphs:
-                self.aux_plot.line(x=a.title+'_x',y=a.title,line_width=1)
-        
     def show(self):
         self.fig.grid.visible = False
         self.fig.axis.visible = False
         plot = bkl.gridplot([[bkl.column(self.embeddingSelect, self.fig), bkl.column(self.coloringSelect, self.logCheck, self.table, self.selected_points_text)]],toolbar_location='below')
         bk.output_notebook()
         bk.show(plot)
-        if hasattr(self,'aux_plot'):
-            bk.show(self.aux_plot)
         bk.output_file(title="Bokeh Plot", filename='bokeh_saves/test.html')
