@@ -102,8 +102,7 @@ class EmbeddingView(PlotData1D):
     def __init__(self, title, data, reducer, xlabels=None):
         super().__init__(title, data, xlabels=xlabels)       
         self.reducer = reducer
-        self.reducer.fit(data)
-        self.embedding = self.reducer.transform(data)
+        self.embedding = self.reducer.fit_transform(data)
 
     def __getitem__(self, key):
         return self.__dict__[key]
